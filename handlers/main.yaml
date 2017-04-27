@@ -1,0 +1,9 @@
+---
+
+- name: Restart Gerrit service
+  service:
+    name: "{{ gerrit_service }}"
+    state: restarted
+  when: >
+    gerrit_service_started is not defined or
+    not gerrit_service_started.changed

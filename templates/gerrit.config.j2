@@ -1,0 +1,3 @@
+{{ ansible_managed | comment }}
+
+{{ gerrit_config | encode_ini(delimiter=" = ", indent="\t") }}

@@ -1,0 +1,331 @@
+---
+
+- name: Create home directory
+  file:
+    path: "{{ gerrit_home }}"
+    owner: root
+    group: root
+    mode: 0755
+    state: directory
+  tags:
+    - gerrit_pkg
+
+- name: Create downloads directory
+  file:
+    path: "{{ gerrit_downloads }}"
+    owner: root
+    group: root
+    mode: 0755
+    state: directory
+  tags:
+    - gerrit_pkg
+
+- name: Download WAR file
+  get_url:
+    url: "{{ gerrit_war_url }}"
+    dest: "{{ gerrit_downloads }}/{{ gerrit_war_url | basename }}"
+    owner: root
+    group: root
+    mode: 0644
+    validate_certs: "{{ gerrit_war_validate_certs }}"
+  register: gerrit_war_download_result
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_pkg
+
+- name: Create symlink for the downloaded WAR file
+  file:
+    src: "{{ gerrit_downloads }}/{{ gerrit_war_url | basename }}"
+    dest: "{{ gerrit_home }}/gerrit.war"
+    force: yes
+    state: link
+  tags:
+    - gerrit_pkg
+
+- name: Install dependencies
+  package:
+    name: "{{ item }}"
+  with_items: "{{ gerrit_deps_pkgs }}"
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_pkg
+
+- name: Create PostgreSQL DB
+  postgresql_db:
+    name: "{{ gerrit_db_name }}"
+    login_user: "{{ gerrit_db_login_user }}"
+    login_password: "{{ gerrit_db_login_password }}"
+    login_host: "{{ gerrit_db_host }}"
+    port: "{{ gerrit_db_port }}"
+  register: gerrit_db_pgsql_created
+  when: gerrit_db_engine == 'postgresql'
+  tags:
+    - gerrit_db
+
+- name: Create PostgreSQL user
+  postgresql_user:
+    name: "{{ gerrit_db_user }}"
+    db: "{{ gerrit_db_name }}"
+    password: "{{ gerrit_db_password }}"
+    priv: ALL
+    login_user: "{{ gerrit_db_login_user }}"
+    login_password: "{{ gerrit_db_login_password }}"
+    login_host: "{{ gerrit_db_host }}"
+    port: "{{ gerrit_db_port }}"
+  when: gerrit_db_engine == 'postgresql'
+  tags:
+    - gerrit_db
+
+- name: Create MySQL DB
+  mysql_db:
+    name: "{{ gerrit_db_name }}"
+    login_host: "{{ gerrit_db_host }}"
+    login_port: "{{ gerrit_db_port }}"
+    login_user: "{{ gerrit_db_login_user }}"
+    login_password: "{{ gerrit_db_login_password }}"
+    encoding: utf8
+  register: gerrit_db_mysql_created
+  when: gerrit_db_engine == 'mysql'
+  tags:
+    - gerrit_db
+
+- name: Create MySQL user
+  mysql_user:
+    login_host: "{{ gerrit_db_host }}"
+    login_port: "{{ gerrit_db_port }}"
+    login_user: "{{ gerrit_db_login_user }}"
+    login_password: "{{ gerrit_db_login_password }}"
+    name: "{{ gerrit_db_user }}"
+    password: "{{ gerrit_db_password }}"
+    priv: "{{ gerrit_db_name }}.*:ALL"
+  when: gerrit_db_engine == 'mysql'
+  tags:
+    - gerrit_db
+
+- name: Create Gerrit group
+  group:
+    name: "{{ gerrit_group }}"
+  tags:
+    - gerrit_group
+    - gerrit_ug
+
+- name: Create Gerrit user
+  user:
+    name: "{{ gerrit_user }}"
+    home: "{{ gerrit_home }}"
+    group: "{{ gerrit_group }}"
+    comment: Gerrit user
+  tags:
+    - gerrit_user
+    - gerrit_ug
+
+- name: Create site directory
+  file:
+    path: "{{ gerrit_site }}"
+    owner: root
+    group: "{{ gerrit_group }}"
+    mode: 0775
+    state: directory
+  tags:
+    - gerrit_conf
+
+- name: Create etc directories
+  file:
+    path: "{{ gerrit_site }}/etc"
+    owner: "{{ gerrit_user }}"
+    group: "{{ gerrit_group }}"
+    mode: 0755
+    state: directory
+  tags:
+    - gerrit_conf
+
+- name: Create tmp directories
+  file:
+    path: "{{ gerrit_site }}/tmp"
+    owner: "{{ gerrit_user }}"
+    group: "{{ gerrit_group }}"
+    mode: 0700
+    state: directory
+  tags:
+    - gerrit_conf
+
+- name: Create main configuration file
+  template:
+    src: gerrit.config.j2
+    dest: "{{ gerrit_site }}/etc/gerrit.config"
+    owner: "{{ gerrit_user }}"
+    group: "{{ gerrit_group }}"
+    mode: 0644
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_conf
+
+- name: Create secure configuration file
+  template:
+    src: secure.config.j2
+    dest: "{{ gerrit_site }}/etc/secure.config"
+    owner: "{{ gerrit_user }}"
+    group: "{{ gerrit_group }}"
+    mode: 0640
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_conf
+
+- name: Get list of installed core plugins
+  shell: >
+    ls -1 {{ gerrit_site }}/plugins/*.jar |
+    sed -e 's,.*/,,' -e 's/.jar$//' |
+    egrep '^({{ gerrit_core_plugins_available | join('|') }})$'
+  register: gerrit_installed_core_plugins_result
+  changed_when: false
+  failed_when: false
+  tags:
+    - gerrit_plugin
+
+- name: Initialize Gerrit
+  become: yes
+  become_user: "{{ gerrit_user }}"
+  shell: >
+    [ -e {{ gerrit_service_path }} ] && {{ gerrit_service_path }} stop;
+    java -jar {{ gerrit_home }}/gerrit.war init
+    --batch
+    --no-auto-start
+    -d {{ gerrit_site }} {{
+      '--install-plugin ' + (gerrit_core_plugins | join(' --install-plugin  '))
+        if gerrit_core_plugins | length > 0
+        else
+      '' }}
+  register: gerrit_init_result
+  when: >
+    (
+        gerrit_installed_core_plugins_result is defined and
+        gerrit_core_plugins | difference(gerrit_installed_core_plugins_result.stdout_lines) | length > 0
+    ) or (
+        gerrit_war_download_result is defined and
+        gerrit_war_download_result.changed
+    )
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_conf
+    - gerrit_plugin
+
+- name: Re-create main configuration file after the initialization
+  template:
+    src: gerrit.config.j2
+    dest: "{{ gerrit_site }}/etc/gerrit.config"
+    owner: "{{ gerrit_user }}"
+    group: "{{ gerrit_group }}"
+    mode: 0644
+  when: >
+    gerrit_init_result is defined and
+    gerrit_init_result.changed
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_conf
+
+- name: Re-index Gerrit
+  become: yes
+  become_user: "{{ gerrit_user }}"
+  shell: >
+    java -jar {{ gerrit_home }}/gerrit.war reindex -d {{ gerrit_site }}
+  when: >
+    gerrit_init_result is defined and
+    gerrit_init_result.changed
+  tags:
+    - gerrit_conf
+
+- name: Install other plugins
+  get_url:
+    url: "{{ item }}"
+    dest: "{{ gerrit_downloads }}/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: 0644
+    validate_certs: "{{ gerrit_other_plugins_validate_certs }}"
+  with_items: "{{ gerrit_other_plugins }}"
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_plugin
+
+- name: Create symlink for the downloaded other plugins
+  file:
+    src: "{{ gerrit_downloads }}/{{ item | basename }}"
+    dest: "{{ gerrit_site }}/plugins/{{ item | basename }}"
+    force: yes
+    state: link
+  with_items: "{{ gerrit_other_plugins }}"
+  tags:
+    - gerrit_plugin
+
+- name: Get list of installed plugins
+  shell: >
+    ls -1 {{ gerrit_site }}/plugins/*.jar |
+    sed -e 's,.*/,,' -e 's/.jar$//'
+  register: gerrit_installed_plugins_result
+  changed_when: false
+  tags:
+    - gerrit_plugin
+
+- name: Get plugin names from the other plugins URLs
+  shell: >
+    echo -e "{{ gerrit_other_plugins | join('\n') }}" |
+    sed -e 's,.*/,,' -e 's/.jar$//'
+  register: gerrit_other_plugins_result
+  changed_when: false
+  tags:
+    - gerrit_plugin
+
+- name: Clear installed plugins
+  file:
+    path: "{{ gerrit_site }}/plugins/{{ item }}.jar"
+    state: absent
+  with_items: "{{
+    gerrit_installed_plugins_result.stdout_lines |
+    difference(gerrit_other_plugins_result.stdout_lines) |
+    difference(gerrit_core_plugins) }}"
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_plugin
+
+- name: Create service defaults
+  template:
+    src: gerritcodereview.j2
+    dest: /etc/default/gerritcodereview
+    owner: root
+    group: root
+    mode: 0644
+  notify:
+    - Restart Gerrit service
+  tags:
+    - gerrit_conf
+
+- name: Create service file symlink
+  file:
+    src: "{{ gerrit_site }}/bin/gerrit.sh"
+    dest: "{{ gerrit_service_path }}"
+    state: link
+  tags:
+    - gerrit_service
+
+- name: Enable service
+  service:
+    name: "{{ gerrit_service }}"
+    enabled: yes
+  tags:
+    - gerrit_service
+
+- name: Start service
+  service:
+    name: "{{ gerrit_service }}"
+    state: started
+  register: gerrit_service_started
+  tags:
+    - gerrit_service
