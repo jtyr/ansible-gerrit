@@ -262,11 +262,11 @@ gerrit_secure__default:
   }}"
 
 # Custom sections of the secure config
-gerrit_secure__config: {}
+gerrit_secure__custom: {}
 
 # Final secure config
 gerrit_secure: "{{
-  gerrit_secure__default.update(gerrit_secure__config) }}{{
+  gerrit_secure__default.update(gerrit_secure__custom) }}{{
   gerrit_secure__default }}"
 
 

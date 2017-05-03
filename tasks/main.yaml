@@ -129,7 +129,7 @@
     mode: 0775
     state: directory
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Create etc directories
   file:
@@ -139,7 +139,7 @@
     mode: 0755
     state: directory
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Create tmp directories
   file:
@@ -149,7 +149,7 @@
     mode: 0700
     state: directory
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Create main configuration file
   template:
@@ -161,7 +161,7 @@
   notify:
     - Restart Gerrit service
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Create secure configuration file
   template:
@@ -170,10 +170,11 @@
     owner: "{{ gerrit_user }}"
     group: "{{ gerrit_group }}"
     mode: 0640
+  no_log: yes
   notify:
     - Restart Gerrit service
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Get list of installed core plugins
   shell: >
@@ -211,7 +212,7 @@
   notify:
     - Restart Gerrit service
   tags:
-    - gerrit_conf
+    - gerrit_config
     - gerrit_plugin
 
 - name: Re-create main configuration file after the initialization
@@ -227,7 +228,7 @@
   notify:
     - Restart Gerrit service
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Re-index Gerrit
   become: yes
@@ -238,7 +239,7 @@
     gerrit_init_result is defined and
     gerrit_init_result.changed
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Install other plugins
   get_url:
@@ -305,7 +306,7 @@
   notify:
     - Restart Gerrit service
   tags:
-    - gerrit_conf
+    - gerrit_config
 
 - name: Create service file symlink
   file:
